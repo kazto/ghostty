@@ -606,7 +606,17 @@ fn renderCallback(
 /// recomputes the wake, so the deadline only ever moves toward the
 /// actual next wake.
 fn armAnimationTimer(self: *Thread) void {
-    const wake = self.renderer.animationWake() orelse return;
+    const wake = self.renderer.animationWake() orelse wake: {
+        // On Win32, keep the timer active because IOCP async wakeups may
+        // be delayed. The timer callback polls the mailbox and frame data.
+        if (comptime @hasDecl(apprt.runtime.Surface, "swapBuffers")) {
+            break :wake .{
+                .delay_ms = rendererpkg.Renderer.draw_interval_ms,
+                .kind = .draw,
+            };
+        }
+        return;
+    };
     self.animation_wake = wake.kind;
     self.render_h.reset(
         &self.loop,
