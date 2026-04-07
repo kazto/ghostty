@@ -642,6 +642,12 @@ fn animationTimerCallback(
     // mailbox message re-arms us when we can be seen again.
     if (!t.flags.visible) return .disarm;
 
+    // On Windows IOCP, async wakeup may be delayed, so also poll the
+    // mailbox whenever the animation timer wakes.
+    if (comptime @hasDecl(apprt.runtime.Surface, "swapBuffers")) {
+        t.drainMailbox() catch {};
+    }
+
     switch (t.animation_wake) {
         // Frame data must be updated (a Kitty animation frame is
         // due). renderCallback updates, draws, and re-arms us.
@@ -656,6 +662,14 @@ fn animationTimerCallback(
         // Draw calls don't update from the terminal state so they
         // are much cheaper than a frame update.
         .draw => {
+            // On Windows the timer doubles as an IOCP polling fallback,
+            // so rebuild frame data before drawing it.
+            if (comptime @hasDecl(apprt.runtime.Surface, "swapBuffers")) {
+                t.renderer.updateFrame(
+                    t.state,
+                    t.flags.cursor_blink_visible,
+                ) catch {};
+            }
             t.drawFrame(false);
             t.armAnimationTimer();
             return .disarm;
