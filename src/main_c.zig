@@ -191,7 +191,7 @@ pub export fn ghostty_string_free(str: String) void {
 // but not MSVC. No upstream issue tracks this exact gap as of 2026-03-26.
 // Closest: Codeberg ziglang/zig #30936 (reimplement crt0 code).
 // Remove this DllMain when Zig handles MSVC DLL CRT init natively.
-pub const DllMain = if (builtin.os.tag == .windows) struct {
+pub const DllMain = if (builtin.os.tag != .windows) void else if (builtin.abi == .msvc) struct {
     const BOOL = windows.BOOL;
     const HINSTANCE = windows.HINSTANCE;
     const DWORD = windows.DWORD;
@@ -208,8 +208,6 @@ pub const DllMain = if (builtin.os.tag == .windows) struct {
     const __acrt_uninitialize = @extern(*const fn (c_int) callconv(.c) c_int, .{ .name = "__acrt_uninitialize" });
 
     pub fn handler(_: HINSTANCE, fdwReason: DWORD, _: LPVOID) callconv(.winapi) BOOL {
-        // Only MSVC needs to bootstrap the CRT; MinGW handles it via dllcrt2.obj.
-        if (builtin.abi != .msvc) return TRUE;
         switch (fdwReason) {
             DLL_PROCESS_ATTACH => {
                 if (__vcrt_initialize() < 0) return FALSE;
@@ -224,7 +222,19 @@ pub const DllMain = if (builtin.os.tag == .windows) struct {
             else => return TRUE,
         }
     }
-}.handler else void;
+}.handler else struct {
+    // GNU ABI: provide a no-op DllMain so Zig's start.zig doesn't
+    // try to call a type instead of a function.
+    const BOOL = windows.BOOL;
+    const HINSTANCE = windows.HINSTANCE;
+    const DWORD = windows.DWORD;
+    const LPVOID = windows.LPVOID;
+    const TRUE = windows.TRUE;
+
+    pub fn handler(_: HINSTANCE, _: DWORD, _: LPVOID) callconv(.winapi) BOOL {
+        return TRUE;
+    }
+}.handler;
 
 test "ghostty_string_s empty string" {
     const testing = std.testing;
