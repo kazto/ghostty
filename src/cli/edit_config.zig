@@ -83,17 +83,20 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     const path = try configpkg.preferredDefaultFilePath(alloc);
     defer alloc.free(path);
 
-    // We don't currently support Windows because we use the exec syscall.
     if (comptime builtin.os.tag == .windows) {
-        try stderr.print(
-            \\The `ghostty +edit-config` command is not supported on Windows.
-            \\Please edit the configuration file manually at the following path:
-            \\
-            \\
-        ,
-            .{},
-        );
-        return 1;
+        const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
+        defer alloc.free(path_w);
+
+        if (@intFromPtr(ShellExecuteW(null, null, path_w.ptr, null, null, 1) orelse null) <= 32) {
+            try stderr.print(
+                \\Failed to open the Ghostty configuration file with the default application.
+                \\Path: {s}
+                \\
+            , .{path});
+            return 1;
+        }
+
+        return 0;
     }
 
     const command = internal_os.getConfigEditCommand(alloc, path, .{ .default_editor = .failure }) catch |err| {
@@ -160,3 +163,12 @@ fn runInner(alloc: Allocator, stderr: *std.Io.Writer) !u8 {
     );
     return 1;
 }
+
+extern "shell32" fn ShellExecuteW(
+    hwnd: ?*anyopaque,
+    lpOperation: ?[*:0]const u16,
+    lpFile: [*:0]const u16,
+    lpParameters: ?[*:0]const u16,
+    lpDirectory: ?[*:0]const u16,
+    nShowCmd: c_int,
+) callconv(.winapi) ?*anyopaque;
