@@ -1,0 +1,6 @@
+[tools]
+zig = "0.15.2"
+
+[tasks.nightly-release]
+description = "Zip zig-out/bin Windows binaries and publish as a dated nightly GitHub release"
+run = "TAG=nightly-$(date +%Y%m%d); ZIP=\"ghostty-$TAG.zip\"; rm -f \"$ZIP\"; zip -j \"$ZIP\" ./zig-out/bin/*.dll ./zig-out/bin/*.exe && gh release create \"$TAG\" --repo kazto/ghostty --title \"Nightly Build $(date +%Y-%m-%d)\" --notes \"Nightly Windows build from commit $(git rev-parse --short HEAD).\" \"$ZIP\""
