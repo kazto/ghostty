@@ -542,6 +542,8 @@ pub fn performAction(
             _ = MessageBeep(0xFFFFFFFF);
             return true;
         },
+        // Win32 has no accessibility consumer for this yet.
+        .selection_changed => return true,
         .progress_report => {
             const surface = switch (target) {
                 .app => return false,
@@ -1016,6 +1018,33 @@ pub fn performIpc(
             }
             return true;
         },
+        .toggle_quick_terminal => {
+            switch (target) {
+                .class => |class| {
+                    try stderr.print(
+                        "Win32 IPC does not yet support targeting a custom Ghostty class: {s}\n",
+                        .{class},
+                    );
+                    try stderr.flush();
+                    return error.IPCFailed;
+                },
+                .detect => {},
+            }
+
+            const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyWindow");
+            const hwnd = sys.FindWindowW(class_name, null) orelse {
+                try stderr.print("No running Ghostty Win32 instance was found.\n", .{});
+                try stderr.flush();
+                return error.IPCFailed;
+            };
+
+            if (sys.PostMessageW(hwnd, sys.WM_APP_TOGGLE_QUICK_TERMINAL, 0, 0) == 0) {
+                try stderr.print("Failed to send a toggle-quick-terminal request to Ghostty.\n", .{});
+                try stderr.flush();
+                return error.IPCFailed;
+            }
+            return true;
+        },
     }
 }
 
@@ -1316,6 +1345,16 @@ pub fn wndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.
             if (getWindow(hwnd)) |window| {
                 window.app.newWindow(.none) catch |err| {
                     log.err("new_window from IPC failed: {}", .{err});
+                };
+            }
+            return 0;
+        },
+        sys.WM_APP_TOGGLE_QUICK_TERMINAL => {
+            // Another instance requested that we toggle the quick terminal.
+            if (getWindow(hwnd)) |window| {
+                _ = window.app.performAction(.app, .toggle_quick_terminal, {}) catch |err| toggle: {
+                    log.err("toggle_quick_terminal from IPC failed: {}", .{err});
+                    break :toggle false;
                 };
             }
             return 0;
