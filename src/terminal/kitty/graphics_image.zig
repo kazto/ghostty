@@ -159,8 +159,9 @@ pub const LoadingImage = struct {
         t: command.Transmission,
         path: []const u8,
     ) !void {
+        // android does not support POSIX shared memory.
         // windows is currently unsupported, does it support shm?
-        if (comptime builtin.target.os.tag == .windows) {
+        if (comptime builtin.abi.isAndroid() or builtin.target.os.tag == .windows) {
             return error.UnsupportedMedium;
         }
 
@@ -329,17 +330,16 @@ pub const LoadingImage = struct {
     fn isPathInTempDir(path: []const u8) bool {
         if (std.mem.startsWith(u8, path, "/tmp")) return true;
         if (std.mem.startsWith(u8, path, "/dev/shm")) return true;
-        if (temp_dir.allocTmpDir(std.heap.page_allocator)) |dir| {
-            defer temp_dir.freeTmpDir(std.heap.page_allocator, dir);
-            if (std.mem.startsWith(u8, path, dir)) return true;
+        const dir = temp_dir.allocTmpDir(std.heap.page_allocator) catch return false;
+        defer temp_dir.freeTmpDir(std.heap.page_allocator, dir);
+        if (std.mem.startsWith(u8, path, dir)) return true;
 
-            // The temporary dir is sometimes a symlink. On macOS for
-            // example /tmp is /private/var/...
-            var buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (posix.realpath(dir, &buf)) |real_dir| {
-                if (std.mem.startsWith(u8, path, real_dir)) return true;
-            } else |_| {}
-        }
+        // The temporary dir is sometimes a symlink. On macOS for
+        // example /tmp is /private/var/...
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (posix.realpath(dir, &buf)) |real_dir| {
+            if (std.mem.startsWith(u8, path, real_dir)) return true;
+        } else |_| {}
 
         return false;
     }
@@ -400,12 +400,6 @@ pub const LoadingImage = struct {
             );
             return error.InvalidData;
         }
-
-        // Set our time
-        self.image.transmit_time = std.time.Instant.now() catch |err| {
-            log.warn("failed to get time: {}", .{err});
-            return error.InternalError;
-        };
 
         // Everything looks good, copy the image data over.
         var result = self.image;
@@ -504,6 +498,12 @@ pub const LoadingImage = struct {
 };
 
 /// Image represents a single fully loaded image.
+///
+/// The image data is always fully decoded raw pixels: loading inflates
+/// any zlib-compressed payload and decodes PNG into RGBA before an image
+/// is completed, so `compression` is always `.none` and `format` is
+/// never `.png` for a stored image, and `data.len` always equals
+/// `width * height * bytes-per-pixel`.
 pub const Image = struct {
     id: u32 = 0,
     number: u32 = 0,
@@ -512,7 +512,14 @@ pub const Image = struct {
     format: command.Transmission.Format = .rgb,
     compression: command.Transmission.Compression = .none,
     data: []const u8 = "",
-    transmit_time: std.time.Instant = undefined,
+
+    /// Unique, monotonically increasing stamp assigned each time an
+    /// image is added to (or replaced in) an ImageStorage. A changed
+    /// generation for a given image ID means the image contents may
+    /// have changed, even if the dimensions and byte length are the
+    /// same (e.g. a retransmission of the same ID). Stamps order by
+    /// transmission time. Zero means "never stored".
+    generation: u64 = 0,
 
     /// Set this to true if this image was loaded by a command that
     /// doesn't specify an ID or number, since such commands should
@@ -521,7 +528,6 @@ pub const Image = struct {
     implicit_id: bool = false,
 
     pub const Error = error{
-        InternalError,
         InvalidData,
         DecompressionFailed,
         DimensionsRequired,
