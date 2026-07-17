@@ -1,0 +1,20 @@
+[tools]
+zig = "0.16.0"
+
+[tasks.nightly-release]
+description = "Zip zig-out/bin Windows binaries and publish as a dated nightly GitHub release"
+run = """
+set -e
+TAG=nightly-$(date +%Y%m%d)
+ZIP="ghostty-$TAG.zip"
+rm -f "$ZIP"
+zip -j "$ZIP" ./zig-out/bin/*.dll ./zig-out/bin/*.exe
+if gh release view "$TAG" --repo kazto/ghostty >/dev/null 2>&1; then
+  gh release delete "$TAG" --repo kazto/ghostty --cleanup-tag --yes
+fi
+gh release create "$TAG" --repo kazto/ghostty --title "Nightly Build $(date +%Y-%m-%d)" --notes "Nightly Windows build from commit $(git rev-parse --short HEAD)." "$ZIP"
+"""
+
+[tasks.build-win]
+description = "build for windows"
+run = "zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast"
