@@ -87,7 +87,7 @@ list_hwnd: ?HWND = null,
 target_window: ?*Window = null,
 
 /// Currently filtered command indices (into input.command.defaults)
-filtered: std.ArrayListUnmanaged(usize) = .{},
+filtered: std.ArrayListUnmanaged(usize) = .empty,
 
 /// True while open() is in progress; blocks WM_ACTIVATE-driven close.
 opening: bool = false,
@@ -100,7 +100,7 @@ pub fn init(alloc: Allocator, app: *App) CommandPalette {
         .edit_hwnd = null,
         .list_hwnd = null,
         .target_window = null,
-        .filtered = .{},
+        .filtered = .empty,
         .opening = false,
     };
 }
