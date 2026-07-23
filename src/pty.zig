@@ -331,6 +331,7 @@ const WindowsPty = struct {
 
     extern "kernel32" fn LoadLibraryW(lpLibFileName: [*:0]const u16) callconv(.winapi) HMODULE;
     extern "kernel32" fn GetProcAddress(hModule: HMODULE, lpProcName: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
+    extern "kernel32" fn GetModuleFileNameW(hModule: HMODULE, lpFilename: [*]u16, nSize: u32) callconv(.winapi) u32;
 
     // Process-wide counter for pipe names
     var pipe_name_counter = std.atomic.Value(u32).init(1);
@@ -351,31 +352,22 @@ const WindowsPty = struct {
     };
 
     fn loadAdjacentConptyDll() ?HMODULE {
-        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const exe_path = std.fs.selfExePath(&exe_buf) catch |err| {
-            log.warn("failed to determine executable path for adjacent conpty.dll lookup err={}", .{err});
+        var exe_path_w_buf: [std.fs.max_path_bytes]u16 = undefined;
+        const exe_path_w_len = GetModuleFileNameW(null, &exe_path_w_buf, exe_path_w_buf.len);
+        if (exe_path_w_len == 0) {
+            log.warn("failed to determine executable path for adjacent conpty.dll lookup", .{});
             return null;
-        };
-        const exe_dir = std.fs.path.dirname(exe_path) orelse return null;
+        }
+        const exe_path_w = exe_path_w_buf[0..exe_path_w_len];
 
-        var dll_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const dll_path = std.fmt.bufPrint(
-            &dll_path_buf,
-            "{s}\\conpty.dll",
-            .{exe_dir},
-        ) catch |err| {
-            log.warn("failed to build adjacent conpty.dll path err={}", .{err});
-            return null;
-        };
+        const sep_idx = std.mem.lastIndexOfScalar(u16, exe_path_w, '\\') orelse return null;
+        const suffix = std.unicode.utf8ToUtf16LeStringLiteral("\\conpty.dll");
 
         var dll_path_w_buf: [std.fs.max_path_bytes]u16 = undefined;
-        const dll_path_w_len = std.unicode.utf8ToUtf16Le(
-            &dll_path_w_buf,
-            dll_path,
-        ) catch |err| {
-            log.warn("failed to encode adjacent conpty.dll path err={}", .{err});
-            return null;
-        };
+        if (sep_idx + suffix.len >= dll_path_w_buf.len) return null;
+        @memcpy(dll_path_w_buf[0..sep_idx], exe_path_w[0..sep_idx]);
+        @memcpy(dll_path_w_buf[sep_idx..][0..suffix.len], suffix);
+        const dll_path_w_len = sep_idx + suffix.len;
         dll_path_w_buf[dll_path_w_len] = 0;
 
         return LoadLibraryW(dll_path_w_buf[0..dll_path_w_len :0].ptr);
