@@ -1359,6 +1359,13 @@ pub fn wndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.
             }
             return 0;
         },
+        0x020A, 0x020E => { // WM_MOUSEWHEEL, WM_MOUSEHWHEEL
+            // Wheel messages land here when a non-surface window (the
+            // top level itself, the tab control, ...) has focus; route
+            // them to the surface under the cursor.
+            if (routeMouseWheel(msg, wparam, lparam)) |result| return result;
+            return sys.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
         else => return sys.DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -1366,6 +1373,63 @@ pub fn wndProc(hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.
 // ============================================================================
 // Surface child window message dispatch
 // ============================================================================
+
+/// Deliver a mouse wheel message to the given surface. The lparam of
+/// wheel messages carries screen coordinates (unlike other mouse
+/// messages, which are client-relative), so this converts them against
+/// the surface's window before updating the cursor position used for
+/// mouse reporting.
+fn surfaceScroll(surface: *Surface, hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) LRESULT {
+    const core = surface.core_surface orelse return 0;
+
+    var pt: sys.POINT = .{
+        .x = @as(i16, @truncate(lparam & 0xFFFF)),
+        .y = @as(i16, @truncate((lparam >> 16) & 0xFFFF)),
+    };
+    if (sys.ScreenToClient(hwnd, &pt) != 0) {
+        surface.cursor_pos = .{
+            .x = @floatFromInt(pt.x),
+            .y = @floatFromInt(pt.y),
+        };
+    }
+
+    // One notch of a standard wheel reports WHEEL_DELTA (120);
+    // high-resolution wheels report fractions of it, which the core
+    // accumulates until a full cell of scroll is reached.
+    const delta: i16 = @truncate(@as(isize, @bitCast(wparam)) >> 16);
+    const ticks: f64 = @as(f64, @floatFromInt(delta)) / 120.0;
+    switch (msg) {
+        // Rotating away from the user is positive on Windows, matching
+        // the core's positive-yoff-scrolls-up convention.
+        0x020A => core.scrollCallback(0, ticks, .{}) catch |err| {
+            log.warn("error in scroll callback err={}", .{err});
+        },
+        // Tilting right is positive on Windows, but the core expects
+        // positive xoff to scroll left (xterm button 6), so invert.
+        0x020E => core.scrollCallback(-ticks, 0, .{}) catch |err| {
+            log.warn("error in scroll callback err={}", .{err});
+        },
+        else => {},
+    }
+    return 0;
+}
+
+/// Route a wheel message to the surface under the cursor. Wheel messages
+/// are delivered to the focused window (or, with the Windows "scroll
+/// inactive windows" setting, the hovered window), which is not
+/// necessarily the surface the pointer is over, so both the top-level
+/// and surface window procedures route through here. This matches the
+/// macOS and GTK behavior of scrolling whatever the pointer is over.
+/// Returns null when the cursor is not over one of our surfaces.
+fn routeMouseWheel(msg: UINT, wparam: WPARAM, lparam: LPARAM) ?LRESULT {
+    const pt: sys.POINT = .{
+        .x = @as(i16, @truncate(lparam & 0xFFFF)),
+        .y = @as(i16, @truncate((lparam >> 16) & 0xFFFF)),
+    };
+    const target = sys.WindowFromPoint(pt) orelse return null;
+    const surface = Surface.fromHwnd(target) orelse return null;
+    return surfaceScroll(surface, target, msg, wparam, lparam);
+}
 
 pub fn surfaceDispatch(app: *App, surface: *Surface, hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) LRESULT {
     switch (msg) {
@@ -1498,18 +1562,12 @@ pub fn surfaceDispatch(app: *App, surface: *Surface, hwnd: HWND, msg: UINT, wpar
             }
             return 0;
         },
-        0x020A => {
-            if (surface.core_surface) |core| {
-                surface.cursor_pos = .{
-                    .x = @floatFromInt(@as(i16, @truncate(lparam & 0xFFFF))),
-                    .y = @floatFromInt(@as(i16, @truncate((lparam >> 16) & 0xFFFF))),
-                };
-                const delta: i16 = @truncate(@as(isize, @bitCast(wparam)) >> 16);
-                const yoff: f64 = @as(f64, @floatFromInt(delta)) / 120.0;
-                const input = @import("../../input.zig");
-                core.scrollCallback(0, yoff, input.ScrollMods{}) catch {};
-            }
-            return 0;
+        0x020A, 0x020E => { // WM_MOUSEWHEEL, WM_MOUSEHWHEEL
+            // Scroll the surface under the cursor when there is one;
+            // otherwise fall back to this surface (e.g. when the cursor
+            // is over a non-surface child like the progress overlay).
+            if (routeMouseWheel(msg, wparam, lparam)) |result| return result;
+            return surfaceScroll(surface, hwnd, msg, wparam, lparam);
         },
         0x010D => { // WM_IME_STARTCOMPOSITION
             if (surface.core_surface) |core| {
