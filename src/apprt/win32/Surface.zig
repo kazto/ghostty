@@ -98,6 +98,9 @@ extern "kernel32" fn GlobalAlloc(uFlags: UINT, dwBytes: usize) callconv(.winapi)
 extern "kernel32" fn GlobalFree(hMem: HANDLE) callconv(.winapi) HANDLE;
 extern "kernel32" fn GlobalLock(hMem: HANDLE) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GlobalUnlock(hMem: HANDLE) callconv(.winapi) BOOL;
+extern "user32" fn GetClassNameW(hWnd: HWND, lpClassName: [*]u16, nMaxCount: c_int) callconv(.winapi) c_int;
+extern "user32" fn GetWindowThreadProcessId(hWnd: HWND, lpdwProcessId: ?*u32) callconv(.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
 
 /// The window this surface belongs to.
 hwnd: HWND,
@@ -160,9 +163,6 @@ pub fn rtApp(self: *Self) *App {
 pub fn init(self: *Self, parent: HWND, app: *App) !void {
     self.* = .{ .hwnd = undefined, .app = app };
 
-    // Create a child window for this surface.
-    const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttySurface");
-
     // Ensure the surface window class is registered (idempotent).
     try registerSurfaceClass();
 
@@ -203,9 +203,31 @@ pub fn init(self: *Self, parent: HWND, app: *App) !void {
 
 var surface_class_registered: bool = false;
 
+/// The window class name used for surface child windows.
+pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttySurface");
+
+/// Resolve an arbitrary HWND to a Surface. Returns null unless the
+/// window is one of our surface child windows in this process; the
+/// process check matters because HWNDs from other processes (including
+/// other Ghostty instances) carry a GWLP_USERDATA pointer that is not
+/// valid in our address space.
+pub fn fromHwnd(hwnd: HWND) ?*Self {
+    var pid: u32 = 0;
+    _ = GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) return null;
+
+    var buf: [class_name.len + 1]u16 = undefined;
+    const len = GetClassNameW(hwnd, &buf, buf.len);
+    if (len != class_name.len) return null;
+    if (!std.mem.eql(u16, buf[0..class_name.len], class_name)) return null;
+
+    const ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (ptr == 0) return null;
+    return @ptrFromInt(@as(usize, @bitCast(ptr)));
+}
+
 fn registerSurfaceClass() !void {
     if (surface_class_registered) return;
-    const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttySurface");
     const hinstance = GetModuleHandleW(null);
     const CS_HREDRAW: u32 = 0x0002;
     const CS_VREDRAW: u32 = 0x0001;
@@ -379,7 +401,7 @@ fn createProgressOverlay(self: *Self) !void {
 
 fn registerProgressClass() !void {
     if (progress_class_registered) return;
-    const class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyProgressOverlay");
+    const progress_class_name = std.unicode.utf8ToUtf16LeStringLiteral("GhosttyProgressOverlay");
     const hinstance = GetModuleHandleW(null);
     var wc: WNDCLASSEXW = std.mem.zeroes(WNDCLASSEXW);
     wc.cbSize = @sizeOf(WNDCLASSEXW);
@@ -387,7 +409,7 @@ fn registerProgressClass() !void {
     wc.lpfnWndProc = progressWndProc;
     wc.hInstance = hinstance;
     wc.hCursor = LoadCursorW(null, @ptrFromInt(32512));
-    wc.lpszClassName = class_name;
+    wc.lpszClassName = progress_class_name;
     if (RegisterClassExW(&wc) == 0) return error.Win32Error;
     progress_class_registered = true;
 }
