@@ -915,6 +915,7 @@ pub fn performAction(
             redrawInspector(self, core.rt_surface);
             return true;
         },
+        .export_terminal_io => return false,
         .set_tab_title => {
             const core = switch (target) {
                 .app => return false,
