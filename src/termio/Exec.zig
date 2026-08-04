@@ -44,6 +44,10 @@ const FlatpakHostCommand = if (!build_config.flatpak) struct {
 /// The subprocess state for our exec backend.
 subprocess: Subprocess,
 
+/// Coordinates shutdown of the blocking Windows PTY reader. On POSIX the
+/// reader is interrupted by its quit pipe instead.
+read_thread_control: ReadThread.Control = .{},
+
 /// Initialize the exec state. This will NOT start it, this only sets
 /// up the internal state necessary to start it later.
 pub fn init(
@@ -140,7 +144,7 @@ pub fn threadEnter(
     const read_thread = try std.Thread.spawn(
         .{},
         if (builtin.os.tag == .windows) ReadThread.threadMainWindows else ReadThread.threadMainPosix,
-        .{ pty_fds.read, io, pipe[0] },
+        .{ pty_fds.read, io, pipe[0], &self.read_thread_control },
     );
     read_thread.setName(global.io(), "io-reader") catch {};
 
@@ -217,11 +221,20 @@ pub fn threadExit(self: *Exec, td: *termio.Termio.ThreadData) void {
     }
 
     if (comptime builtin.os.tag == .windows) {
-        // Interrupt the blocking read so the thread can see the quit message
-        if (windows.exp.kernel32.CancelIoEx(exec.read_thread_fd, null) == windows.FALSE) {
-            switch (windows.GetLastError()) {
-                .NOT_FOUND => {},
-                else => |err| log.warn("error interrupting read thread err={}", .{err}),
+        // ReadFile is synchronous on this handle, so CancelIoEx cannot
+        // interrupt it. The atomics close the race between checking the stop
+        // flag and entering ReadFile: if the reader isn't in that window it
+        // will observe `stopping` before issuing its next read.
+        self.read_thread_control.stopping.store(true, .seq_cst);
+        if (self.read_thread_control.reading.load(.seq_cst)) {
+            var iosb: std.os.windows.IO_STATUS_BLOCK = undefined;
+            switch (std.os.windows.ntdll.NtCancelSynchronousIoFile(
+                exec.read_thread.getHandle(),
+                null,
+                &iosb,
+            )) {
+                .SUCCESS, .NOT_FOUND => {},
+                else => |err| log.warn("error interrupting read thread status={}", .{err}),
             }
         }
     }
@@ -1301,6 +1314,11 @@ const Subprocess = struct {
 /// monitoring two fds and this is still much faster and lower
 /// overhead than any async mechanism.
 pub const ReadThread = struct {
+    const Control = struct {
+        stopping: std.atomic.Value(bool) = .init(false),
+        reading: std.atomic.Value(bool) = .init(false),
+    };
+
     /// The number of buffers rotated between the gather and parse
     /// stages. The gather stage can run at most this many batches
     /// ahead of the parse stage before it blocks, which (via the
@@ -1407,7 +1425,13 @@ pub const ReadThread = struct {
         bufs: [buffer_count][buffer_capacity]u8 = undefined,
     };
 
-    fn threadMainPosix(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
+    fn threadMainPosix(
+        fd: posix.fd_t,
+        io: *termio.Termio,
+        quit: posix.fd_t,
+        control: *Control,
+    ) void {
+        _ = control;
         // Always close our end of the pipe when we exit.
         defer _ = posix.system.close(quit);
 
@@ -1773,7 +1797,12 @@ pub const ReadThread = struct {
         return true;
     }
 
-    fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
+    fn threadMainWindows(
+        fd: posix.fd_t,
+        io: *termio.Termio,
+        quit: posix.fd_t,
+        control: *Control,
+    ) void {
         // Always close our end of the pipe when we exit.
         defer _ = posix.system.close(quit);
 
@@ -1786,40 +1815,34 @@ pub const ReadThread = struct {
 
         var buf: [1024]u8 = undefined;
         while (true) {
-            while (true) {
-                var n: windows.DWORD = 0;
-                if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
-                    const err = windows.GetLastError();
-                    switch (err) {
-                        // Check for a quit signal
-                        .OPERATION_ABORTED => break,
-
-                        else => {
-                            log.err("io reader error err={}", .{err});
-                            unreachable;
-                        },
-                    }
-                }
-
-                @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
-
-                // See threadMainPosix: hand the renderer state mutex
-                // off if the renderer is waiting, since this loop
-                // would otherwise starve it under heavy output.
-                io.renderer_state.yieldToDemand(global.io());
-            }
-
-            var quit_bytes: windows.DWORD = 0;
-            if (windows.exp.kernel32.PeekNamedPipe(quit, null, 0, null, &quit_bytes, null) == windows.FALSE) {
-                const err = windows.GetLastError();
-                log.err("quit pipe reader error err={}", .{err});
-                unreachable;
-            }
-
-            if (quit_bytes > 0) {
-                log.info("read thread got quit signal", .{});
+            control.reading.store(true, .seq_cst);
+            if (control.stopping.load(.seq_cst)) {
+                control.reading.store(false, .seq_cst);
                 return;
             }
+
+            var n: windows.DWORD = 0;
+            if (windows.exp.kernel32.ReadFile(fd, &buf, buf.len, &n, null) == windows.FALSE) {
+                const err = windows.GetLastError();
+                control.reading.store(false, .seq_cst);
+                switch (err) {
+                    // Cancellation and a closed ConPTY are both normal exit
+                    // paths for the reader.
+                    .OPERATION_ABORTED, .BROKEN_PIPE, .HANDLE_EOF => return,
+                    else => {
+                        log.err("io reader error err={}", .{err});
+                        return;
+                    },
+                }
+            }
+            control.reading.store(false, .seq_cst);
+
+            if (n == 0) return;
+            @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
+
+            // See threadMainPosix: hand the renderer state mutex off if this
+            // loop would otherwise starve it under heavy output.
+            io.renderer_state.yieldToDemand(global.io());
         }
     }
 };
