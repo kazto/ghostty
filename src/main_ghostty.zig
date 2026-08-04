@@ -66,6 +66,7 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
 
     // Execute our action if we have one
     if (global.action()) |action| {
+        attachParentConsole();
         std.log.info("executing CLI action={}", .{action});
         std.process.exit(action.run(alloc) catch |err| err: {
             std.log.err("CLI action failed error={}", .{err});
@@ -112,6 +113,29 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
 
     // Run the GUI event loop
     try app_runtime.run();
+}
+
+/// Windows builds use the GUI subsystem so launching Ghostty normally does
+/// not create a console window. As a consequence, Windows also doesn't attach
+/// the process to the calling terminal automatically and CLI action output has
+/// nowhere to go. Attach only when stdout wasn't explicitly inherited (for
+/// example, as a pipe or redirected file), preserving those handles when they
+/// are present.
+fn attachParentConsole() void {
+    if (comptime builtin.os.tag != .windows) return;
+
+    const handle = std.Io.File.stdout().handle;
+    if (@intFromPtr(handle) != 0 and handle != std.os.windows.INVALID_HANDLE_VALUE) return;
+
+    const windows = struct {
+        const ATTACH_PARENT_PROCESS: std.os.windows.DWORD = 0xFFFFFFFF;
+
+        extern "kernel32" fn AttachConsole(
+            dwProcessId: std.os.windows.DWORD,
+        ) callconv(.winapi) std.os.windows.BOOL;
+    };
+
+    _ = windows.AttachConsole(windows.ATTACH_PARENT_PROCESS);
 }
 
 // The function std.log will call.
