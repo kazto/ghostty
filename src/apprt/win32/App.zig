@@ -1106,6 +1106,11 @@ fn getModifiers() @import("../../input.zig").Mods {
 
 fn handleTextInput(surface: *Surface, msg: UINT, wparam: WPARAM) LRESULT {
     _ = msg;
+    if (surface.suppress_next_char) {
+        surface.suppress_next_char = false;
+        return 0;
+    }
+
     if (surface.core_surface) |core| {
         const mods = getModifiers();
         const codepoint: u21 = @intCast(wparam);
@@ -1160,7 +1165,11 @@ fn isTextVirtualKey(vk: WPARAM) bool {
     };
 }
 
-fn shouldDispatchKeyPress(vk: WPARAM, mods: @import("../../input.zig").Mods) bool {
+fn shouldDispatchKeyPress(
+    vk: WPARAM,
+    mods: @import("../../input.zig").Mods,
+    is_binding: bool,
+) bool {
     if (!isTextVirtualKey(vk)) return true;
 
     // Text-producing keys should usually be delivered through WM_CHAR /
@@ -1171,7 +1180,17 @@ fn shouldDispatchKeyPress(vk: WPARAM, mods: @import("../../input.zig").Mods) boo
     if (mods.alt and mods.sides.alt != .right) return true;
     if (mods.ctrl and !(mods.alt and mods.sides.alt == .right)) return true;
 
-    return false;
+    return is_binding;
+}
+
+test "text key presses are dispatched for configured bindings" {
+    const input = @import("../../input.zig");
+
+    try std.testing.expect(!shouldDispatchKeyPress('A', .{}, false));
+    try std.testing.expect(shouldDispatchKeyPress('A', .{}, true));
+    try std.testing.expect(shouldDispatchKeyPress('A', input.Mods{ .shift = true }, true));
+    try std.testing.expect(shouldDispatchKeyPress('A', input.Mods{ .ctrl = true }, false));
+    try std.testing.expect(shouldDispatchKeyPress(0x70, .{}, false));
 }
 
 fn mapVirtualKey(vk: WPARAM) @import("../../input.zig").Key {
@@ -1460,7 +1479,6 @@ pub fn surfaceDispatch(app: *App, surface: *Surface, hwnd: HWND, msg: UINT, wpar
         WM_KEYDOWN, 0x0104 => {
             if (surface.core_surface) |core| {
                 const mods = getModifiers();
-                if (!shouldDispatchKeyPress(wparam, mods)) return sys.DefWindowProcW(hwnd, msg, wparam, lparam);
                 const key = mapVirtualKey(wparam);
                 if (key != .unidentified) {
                     const input = @import("../../input.zig");
@@ -1487,6 +1505,20 @@ pub fn surfaceDispatch(app: *App, surface: *Surface, hwnd: HWND, msg: UINT, wpar
                         .mods = mods,
                         .unshifted_codepoint = unshifted,
                     };
+                    const is_binding = core.keyEventIsBinding(event) != null;
+                    const normally_dispatched = shouldDispatchKeyPress(wparam, mods, false);
+                    if (!normally_dispatched and !is_binding) {
+                        return sys.DefWindowProcW(hwnd, msg, wparam, lparam);
+                    }
+
+                    // A text-producing binding must be processed from
+                    // WM_KEYDOWN because it carries the physical key and
+                    // unshifted codepoint used by config keybind matching.
+                    // Discard the WM_CHAR generated for the same press to
+                    // avoid encoding the input twice for unconsumed binds.
+                    if (!normally_dispatched and is_binding) {
+                        surface.suppress_next_char = true;
+                    }
                     const effect = core.keyCallback(event) catch |err| {
                         log.err("key callback error: {}", .{err});
                         return 0;
