@@ -134,6 +134,10 @@ progress_visible: bool = false,
 progress_state: terminal.osc.Command.ProgressReport.State = .remove,
 progress_value: ?u8 = null,
 progress_phase: u8 = 0,
+/// Set when a text-producing key was sent to the core early so that a
+/// configured keybinding could be matched. TranslateMessage will still
+/// generate a WM_CHAR for that key, which must not be sent a second time.
+suppress_next_char: bool = false,
 layout_x: i32 = 0,
 layout_y: i32 = 0,
 layout_w: i32 = 0,
