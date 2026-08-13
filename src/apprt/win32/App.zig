@@ -925,6 +925,9 @@ pub fn performAction(
             window.setActiveTabTitle(value.title) catch return false;
             return true;
         },
+        .export_terminal_io,
+        .move_tab_to_new_window,
+        => return false,
         .undo,
         .redo,
         => return true,
@@ -969,6 +972,7 @@ pub fn performIpc(
 
     switch (action) {
         .toggle_quick_terminal => return false,
+        .new_tab => return false,
         .new_window => {
             switch (target) {
                 .class => |class| {
