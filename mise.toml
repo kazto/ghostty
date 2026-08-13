@@ -2,13 +2,11 @@
 zig = "0.16.0"
 
 [tasks.nightly-release-gh]
-description = "Zip zig-out/bin Windows binaries and publish as a dated nightly GitHub release"
+description = "Publish the dated Windows build ZIP as a nightly GitHub release"
 run = """
 set -e
 TAG=nightly-$(date +%Y%m%d)
 ZIP="ghostty-$TAG.zip"
-rm -f "$ZIP"
-zip -j "$ZIP" ./zig-out/bin/ghostty.exe ./zig-out/bin/ghostty-vt.dll
 if gh release view "$TAG" --repo kazto/ghostty >/dev/null 2>&1; then
   gh release delete "$TAG" --repo kazto/ghostty --cleanup-tag --yes
 fi
@@ -16,18 +14,23 @@ gh release create "$TAG" --repo kazto/ghostty --title "Nightly Build $(date +%Y-
 """
 
 [tasks.nightly-release-berg]
-description = "Zip zig-out/bin Windows binaries and publish as a dated nightly Codeberg release"
+description = "Publish the dated Windows build ZIP as a nightly Codeberg release"
 run = """
 set -e
 TAG=nightly-$(date +%Y%m%d)
 ZIP="ghostty-$TAG.zip"
-rm -f "$ZIP"
-zip -j "$ZIP" ./zig-out/bin/ghostty.exe ./zig-out/bin/ghostty-vt.dll
 git push berg HEAD
 tea-cli release delete --login codeberg.org --repo kazto/ghostty --confirm --delete-tag "$TAG" 2>/dev/null || true
 tea-cli release create --login codeberg.org --repo kazto/ghostty --tag "$TAG" --target "$(git rev-parse HEAD)" --title "Nightly Build $(date +%Y-%m-%d)" --note "Nightly Windows build from commit $(git rev-parse --short HEAD)." --asset "$ZIP"
 """
 
 [tasks.build-win]
-description = "build for windows"
-run = "zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast"
+description = "Build for Windows and create a dated nightly ZIP"
+run = """
+set -e
+TAG=nightly-$(date +%Y%m%d)
+ZIP="ghostty-$TAG.zip"
+zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
+rm -f "$ZIP"
+zip -j "$ZIP" ./zig-out/bin/ghostty.exe ./zig-out/bin/ghostty-vt.dll
+"""
