@@ -485,6 +485,19 @@ pub fn performAction(
             }
             return true;
         },
+        .set_window_title => {
+            const core = switch (target) {
+                .app => return false,
+                .surface => |core| core,
+            };
+            const window = core.rt_surface.window orelse return false;
+            if (window.hwnd) |hwnd| {
+                const utf16 = std.unicode.utf8ToUtf16LeAllocZ(self.alloc, value.title) catch return false;
+                defer self.alloc.free(utf16);
+                _ = sys.SetWindowTextW(hwnd, utf16.ptr);
+            }
+            return true;
+        },
         .toggle_maximize => {
             const window = self.focused_window orelse return false;
             if (window.hwnd) |hwnd| {
@@ -786,6 +799,7 @@ pub fn performAction(
             const initial = switch (value) {
                 .surface => rt_surface.getTitle() orelse "",
                 .tab => window.getActiveTabTitle() orelse "",
+                .window => rt_surface.getTitle() orelse "",
             };
             self.prompt_dialog.open(
                 window,
@@ -793,6 +807,7 @@ pub fn performAction(
                 switch (value) {
                     .surface => .surface_title,
                     .tab => .tab_title,
+                    .window => .window_title,
                 },
                 initial,
             ) catch return false;
