@@ -48,7 +48,7 @@ extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: c_int) callconv(.winapi
 extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: c_int, dwNewLong: isize) callconv(.winapi) isize;
 extern "gdi32" fn CreateFontW(cHeight: c_int, cWidth: c_int, cEscapement: c_int, cOrientation: c_int, cWeight: c_int, bItalic: DWORD, bUnderline: DWORD, bStrikeOut: DWORD, iCharSet: DWORD, iOutPrecision: DWORD, iClipPrecision: DWORD, iQuality: DWORD, iPitchAndFamily: DWORD, pszFaceName: [*:0]const u16) callconv(.winapi) ?*anyopaque;
 
-pub const Mode = enum { surface_title, tab_title };
+pub const Mode = enum { surface_title, tab_title, window_title };
 
 alloc: Allocator,
 app: *App,
@@ -89,6 +89,7 @@ pub fn open(self: *Self, window: *Window, surface: *CoreSurface, mode: Mode, ini
     const caption = switch (mode) {
         .surface_title => std.unicode.utf8ToUtf16LeStringLiteral("Set Title"),
         .tab_title => std.unicode.utf8ToUtf16LeStringLiteral("Set Tab Title"),
+        .window_title => std.unicode.utf8ToUtf16LeStringLiteral("Set Window Title"),
     };
     const hinstance = sys.GetModuleHandleW(null);
     self.hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, class_name, caption, WS_POPUP | WS_BORDER, x, y, width, height, parent, null, hinstance, null) orelse return error.Win32Error;
@@ -131,6 +132,7 @@ fn accept(self: *Self) void {
     _ = switch (self.mode) {
         .surface_title => self.app.performAction(.{ .surface = target }, .set_title, .{ .title = utf8 }) catch false,
         .tab_title => self.app.performAction(.{ .surface = target }, .set_tab_title, .{ .title = utf8 }) catch false,
+        .window_title => self.app.performAction(.{ .surface = target }, .set_window_title, .{ .title = utf8 }) catch false,
     };
     self.close();
 }
