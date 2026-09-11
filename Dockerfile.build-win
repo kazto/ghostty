@@ -1,0 +1,26 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+        curl ca-certificates xz-utils zip python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ZIG_VERSION=0.16.0
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+        -o /tmp/zig.tar.xz \
+    && mkdir -p /opt/zig \
+    && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+    && rm /tmp/zig.tar.xz
+ENV PATH="/opt/zig:${PATH}"
+
+# Build as a non-root user matching the host UID/GID so files written into
+# the bind-mounted repo (zig-out, .zig-cache) come out already owned by the
+# host user instead of root.
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g "${GID}" builder \
+    && useradd -m -u "${UID}" -g "${GID}" -s /bin/bash builder
+USER builder
+ENV HOME=/home/builder
+
+WORKDIR /src

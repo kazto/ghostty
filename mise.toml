@@ -20,17 +20,12 @@ set -e
 TAG=nightly-$(date +%Y%m%d)
 ZIP="ghostty-$TAG.zip"
 git push berg HEAD
-tea-cli release delete --login codeberg.org --repo kazto/ghostty --confirm --delete-tag "$TAG" 2>/dev/null || true
-tea-cli release create --login codeberg.org --repo kazto/ghostty --tag "$TAG" --target "$(git rev-parse HEAD)" --title "Nightly Build $(date +%Y-%m-%d)" --note "Nightly Windows build from commit $(git rev-parse --short HEAD)." --asset "$ZIP"
+tea release delete --login codeberg.org --repo kazto/ghostty --confirm --delete-tag "$TAG" 2>/dev/null || true
+tea release create --login codeberg.org --repo kazto/ghostty --tag "$TAG" --target "$(git rev-parse HEAD)" --title "Nightly Build $(date +%Y-%m-%d)" --note "Nightly Windows build from commit $(git rev-parse --short HEAD)." --asset "$ZIP"
 """
 
 [tasks.build-win]
 description = "Build for Windows and create a dated nightly ZIP"
 run = """
-set -e
-TAG=nightly-$(date +%Y%m%d)
-ZIP="ghostty-$TAG.zip"
-zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
-rm -f "$ZIP"
-zip -j "$ZIP" ./zig-out/bin/ghostty.exe ./zig-out/bin/ghostty-vt.dll
+newgrp docker -c "sh ./build-win.sh"
 """
